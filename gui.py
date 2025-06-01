@@ -3,10 +3,12 @@ import os
 import sys
 import csv
 import re
+import subprocess
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTableWidget, QTableWidgetItem, 
                             QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, 
                             QWidget, QLabel, QProgressBar, QMessageBox, QCheckBox,
-                            QTabWidget, QSpinBox, QComboBox, QGroupBox, QFormLayout, QHeaderView)
+                            QTabWidget, QSpinBox, QComboBox, QGroupBox, QFormLayout, 
+                            QHeaderView, QTextEdit, QLineEdit, QSlider)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 import mutagen
 from mutagen.mp3 import MP3, EasyMP3
@@ -40,14 +42,22 @@ try:
         update_tags_from_csv
     )
     
-    print("Successfully imported functions from the scripts")
+    # Import from converter script
+    from convert_video_to_mp3 import (
+        is_video_file,
+        check_ffmpeg,
+        convert_video_to_mp3,
+        batch_convert_videos,
+        extract_metadata_from_video
+    )
+    
+    print("Successfully imported functions from all scripts")
     
 except ImportError as e:
     print(f"Error importing scripts: {e}")
     QMessageBox.critical(None, "Script Import Error", 
                         f"Could not import functions from scripts: {e}\n\n"
-                        "Make sure the scripts are in the same directory as this application "
-                        "and are named properly (with underscores instead of hyphens).")
+                        "Make sure all scripts are in the same directory as this application.")
     sys.exit(1)
 
 def update_tags_from_csv_with_callback(csv_file, input_folder, dry_run=False, verbose=False, 
@@ -55,9 +65,6 @@ def update_tags_from_csv_with_callback(csv_file, input_folder, dry_run=False, ve
     """
     Wrapper around the original update_tags_from_csv function that adds progress callback support
     """
-    # This is a custom implementation that wraps the original function
-    # and adds progress reporting for the GUI
-    
     # Make sure input folder exists and normalize the path
     input_folder = os.path.normpath(os.path.expanduser(input_folder))
     if not os.path.isdir(input_folder):
@@ -220,17 +227,27 @@ def update_tags_from_csv_with_callback(csv_file, input_folder, dry_run=False, ve
 class MusicMetadataManager(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Music Metadata Manager")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setWindowTitle("Music Metadata Manager with Video Converter")
+        self.setGeometry(100, 100, 1400, 900)
         
         # Initialize variables
         self.music_files = []
+        self.video_files = []
         self.metadata = []
         self.current_folder = os.path.expanduser("~")
         self.csv_path = None
         
+        # Check FFmpeg availability
+        self.ffmpeg_available = check_ffmpeg()
+        
         # Create UI
         self.setup_ui()
+        
+        if not self.ffmpeg_available:
+            QMessageBox.warning(self, "FFmpeg Not Found", 
+                               "FFmpeg is not installed or not found in PATH.\n"
+                               "Video conversion features will be disabled.\n\n"
+                               "Please install FFmpeg to enable video conversion.")
         
     def setup_ui(self):
         # Main widget and layout
@@ -239,21 +256,106 @@ class MusicMetadataManager(QMainWindow):
         
         # Create tabs
         tabs = QTabWidget()
+        convert_tab = QWidget()
         extract_tab = QWidget()
         edit_tab = QWidget()
         update_tab = QWidget()
         
+        tabs.addTab(convert_tab, "Convert Videos")
         tabs.addTab(extract_tab, "Extract Metadata")
         tabs.addTab(edit_tab, "Edit Metadata")
         tabs.addTab(update_tab, "Update Files")
         
         # Setup each tab
+        self.setup_convert_tab(convert_tab)
         self.setup_extract_tab(extract_tab)
         self.setup_edit_tab(edit_tab)
         self.setup_update_tab(update_tab)
         
         main_layout.addWidget(tabs)
         self.setCentralWidget(main_widget)
+    
+    def setup_convert_tab(self, tab):
+        layout = QVBoxLayout(tab)
+        
+        # FFmpeg status
+        if not self.ffmpeg_available:
+            error_label = QLabel("⚠️ FFmpeg not found - video conversion disabled")
+            error_label.setStyleSheet("color: red; font-weight: bold; padding: 10px;")
+            layout.addWidget(error_label)
+        
+        # Top controls
+        top_controls = QHBoxLayout()
+        
+        # Folder selection
+        folder_btn = QPushButton("Select Video Folder")
+        folder_btn.clicked.connect(self.select_video_folder)
+        folder_btn.setEnabled(self.ffmpeg_available)
+        self.video_folder_label = QLabel("No folder selected")
+        
+        # Conversion options
+        options_group = QGroupBox("Conversion Options")
+        options_layout = QFormLayout()
+        
+        self.recursive_video_checkbox = QCheckBox("Include subfolders")
+        self.recursive_video_checkbox.setChecked(True)
+        
+        # Quality selector
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItems(['128k', '192k', '256k', '320k'])
+        self.quality_combo.setCurrentText('192k')
+        
+        # Output folder option
+        self.output_folder_checkbox = QCheckBox("Use separate output folder")
+        self.output_folder_btn = QPushButton("Select Output Folder")
+        self.output_folder_btn.clicked.connect(self.select_output_folder)
+        self.output_folder_btn.setEnabled(False)
+        self.output_folder_label = QLabel("Same as input folder")
+        
+        self.output_folder_checkbox.toggled.connect(self.output_folder_btn.setEnabled)
+        self.output_folder_checkbox.toggled.connect(
+            lambda checked: self.output_folder_label.setText("No folder selected" if checked else "Same as input folder")
+        )
+        
+        self.overwrite_checkbox = QCheckBox("Overwrite existing MP3 files")
+        self.preserve_metadata_checkbox = QCheckBox("Preserve video metadata")
+        self.preserve_metadata_checkbox.setChecked(True)
+        
+        options_layout.addRow("Include subfolders:", self.recursive_video_checkbox)
+        options_layout.addRow("Audio quality:", self.quality_combo)
+        options_layout.addRow(self.output_folder_checkbox)
+        options_layout.addRow("Output folder:", self.output_folder_btn)
+        options_layout.addRow("", self.output_folder_label)
+        options_layout.addRow(self.overwrite_checkbox)
+        options_layout.addRow(self.preserve_metadata_checkbox)
+        
+        options_group.setLayout(options_layout)
+        
+        top_controls.addWidget(folder_btn)
+        top_controls.addWidget(self.video_folder_label, 1)
+        top_controls.addWidget(options_group)
+        
+        # Convert button 
+        convert_btn = QPushButton("Convert Videos to MP3")
+        convert_btn.clicked.connect(self.convert_videos)
+        convert_btn.setMinimumHeight(50)
+        convert_btn.setEnabled(self.ffmpeg_available)
+        
+        # Video file list
+        self.video_table = QTableWidget()
+        self.video_table.setColumnCount(3)
+        self.video_table.setHorizontalHeaderLabels(["Filename", "Status", "Details"])
+        self.video_table.horizontalHeader().setStretchLastSection(True)
+        
+        # Progress bar
+        self.conversion_progress_bar = QProgressBar()
+        self.conversion_progress_bar.setRange(0, 100)
+        
+        # Add widgets to layout
+        layout.addLayout(top_controls)
+        layout.addWidget(convert_btn)
+        layout.addWidget(self.video_table)
+        layout.addWidget(self.conversion_progress_bar)
     
     def setup_extract_tab(self, tab):
         layout = QVBoxLayout(tab)
@@ -321,22 +423,22 @@ class MusicMetadataManager(QMainWindow):
         
         # Metadata table
         self.metadata_table = QTableWidget()
-        self.metadata_table.setColumnCount(9)  # Updated to include year
+        self.metadata_table.setColumnCount(9)
         self.metadata_table.setHorizontalHeaderLabels([
             "Filename", "Title", "Artist", "Album", 
             "Album Artist", "Genre", "Year", "Track #", "Disc #"])
         
-        # Set column widths (approximate proportions)
+        # Set column widths
         header = self.metadata_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)  # Filename - stretch
-        header.setSectionResizeMode(1, QHeaderView.Stretch)  # Title - stretch
-        header.setSectionResizeMode(2, QHeaderView.Stretch)  # Artist - stretch
-        header.setSectionResizeMode(3, QHeaderView.Stretch)  # Album - stretch
-        header.setSectionResizeMode(4, QHeaderView.Stretch)  # Album Artist - stretch
-        header.setSectionResizeMode(5, QHeaderView.Interactive)  # Genre - fixed
-        header.setSectionResizeMode(6, QHeaderView.Interactive)  # Year - fixed (new)
-        header.setSectionResizeMode(7, QHeaderView.Interactive)  # Track # - fixed
-        header.setSectionResizeMode(8, QHeaderView.Interactive)  # Disc # - fixed
+        header.setSectionResizeMode(0, QHeaderView.Stretch)  # Filename
+        header.setSectionResizeMode(1, QHeaderView.Stretch)  # Title
+        header.setSectionResizeMode(2, QHeaderView.Stretch)  # Artist
+        header.setSectionResizeMode(3, QHeaderView.Stretch)  # Album
+        header.setSectionResizeMode(4, QHeaderView.Stretch)  # Album Artist
+        header.setSectionResizeMode(5, QHeaderView.Interactive)  # Genre
+        header.setSectionResizeMode(6, QHeaderView.Interactive)  # Year
+        header.setSectionResizeMode(7, QHeaderView.Interactive)  # Track #
+        header.setSectionResizeMode(8, QHeaderView.Interactive)  # Disc #
         
         # Set fixed width for some columns
         self.metadata_table.setColumnWidth(5, 100)  # Genre
@@ -349,7 +451,7 @@ class MusicMetadataManager(QMainWindow):
         bulk_edit_layout = QHBoxLayout()
         
         self.bulk_field = QComboBox()
-        self.bulk_field.addItems(["Title", "Artist", "Album", "Album Artist", "Genre", "Year"])  # Added Year
+        self.bulk_field.addItems(["Title", "Artist", "Album", "Album Artist", "Genre", "Year"])
         
         self.bulk_value = QComboBox()
         self.bulk_value.setEditable(True)
@@ -368,7 +470,7 @@ class MusicMetadataManager(QMainWindow):
         # Add widgets to layout
         layout.addLayout(top_controls)
         layout.addWidget(self.metadata_table)
-        layout.addWidget(bulk_edit_group)    
+        layout.addWidget(bulk_edit_group)
 
     def setup_update_tab(self, tab):
         layout = QVBoxLayout(tab)
@@ -409,7 +511,121 @@ class MusicMetadataManager(QMainWindow):
         layout.addWidget(self.results_table)
         layout.addWidget(QLabel("Note: Please save your metadata in the Edit tab before updating files."))
     
-    # Functionality methods
+    # Video conversion methods
+    def select_video_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Video Folder", self.current_folder)
+        if folder:
+            self.current_folder = folder
+            self.video_folder_label.setText(folder)
+            self.scan_video_folder()
+    
+    def select_output_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Output Folder", self.current_folder)
+        if folder:
+            self.output_folder_label.setText(folder)
+    
+    def scan_video_folder(self):
+        # Scan the selected folder for video files
+        self.video_files = []
+        if self.recursive_video_checkbox.isChecked():
+            for root, _, files in os.walk(self.current_folder):
+                for file in files:
+                    if is_video_file(file):
+                        self.video_files.append(os.path.join(root, file))
+        else:
+            for file in os.listdir(self.current_folder):
+                filepath = os.path.join(self.current_folder, file)
+                if os.path.isfile(filepath) and is_video_file(file):
+                    self.video_files.append(filepath)
+        
+        # Update the video table
+        self.video_table.setRowCount(len(self.video_files))
+        for i, filepath in enumerate(self.video_files):
+            filename = os.path.basename(filepath)
+            self.video_table.setItem(i, 0, QTableWidgetItem(filename))
+            self.video_table.setItem(i, 1, QTableWidgetItem("Pending"))
+            self.video_table.setItem(i, 2, QTableWidgetItem("Ready for conversion"))
+    
+    def convert_videos(self):
+        if not self.video_files:
+            QMessageBox.warning(self, "No Videos", "Please select a folder with video files first.")
+            return
+        
+        # Get conversion settings
+        quality = self.quality_combo.currentText()
+        output_folder = None
+        if self.output_folder_checkbox.isChecked():
+            output_folder = self.output_folder_label.text()
+            if output_folder == "No folder selected":
+                QMessageBox.warning(self, "No Output Folder", "Please select an output folder.")
+                return
+        
+        overwrite = self.overwrite_checkbox.isChecked()
+        preserve_metadata = self.preserve_metadata_checkbox.isChecked()
+        
+        # Start conversion in background thread
+        self.conversion_thread = VideoConversionThread(
+            self.current_folder,
+            output_folder,
+            quality,
+            self.recursive_video_checkbox.isChecked(),
+            preserve_metadata,
+            overwrite
+        )
+        
+        self.conversion_thread.progress_update.connect(self.update_conversion_progress)
+        self.conversion_thread.finished.connect(self.conversion_finished)
+        self.conversion_thread.start()
+    
+    def update_conversion_progress(self, filepath, status, details):
+        # Find the row for this file
+        filename = os.path.basename(filepath)
+        for i in range(self.video_table.rowCount()):
+            if self.video_table.item(i, 0).text() == filename:
+                self.video_table.setItem(i, 1, QTableWidgetItem(status))
+                self.video_table.setItem(i, 2, QTableWidgetItem(details))
+                break
+        
+        # Update progress bar
+        completed = 0
+        for i in range(self.video_table.rowCount()):
+            status_item = self.video_table.item(i, 1)
+            if status_item and status_item.text() in ["Completed", "Failed", "Skipped"]:
+                completed += 1
+        
+        progress = (completed / len(self.video_files)) * 100 if self.video_files else 0
+        self.conversion_progress_bar.setValue(int(progress))
+    
+    def conversion_finished(self, stats):
+        # Show summary and offer to extract metadata from converted files
+        message = (
+            f"Video conversion complete!\n\n"
+            f"Total videos: {stats['total']}\n"
+            f"Converted: {stats['converted']}\n"
+            f"Skipped: {stats['skipped']}\n"
+            f"Failed: {stats['failed']}\n\n"
+            f"Would you like to extract metadata from the converted MP3 files?"
+        )
+        
+        reply = QMessageBox.question(self, "Conversion Complete", message,
+                                   QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            # Switch to extract tab and use the same folder
+            tab_widget = self.centralWidget().findChild(QTabWidget)
+            tab_widget.setCurrentIndex(1)  # Extract tab
+            
+            # Set folder for extraction
+            if self.output_folder_checkbox.isChecked():
+                extract_folder = self.output_folder_label.text()
+            else:
+                extract_folder = self.current_folder
+            
+            self.current_folder = extract_folder
+            self.folder_label.setText(extract_folder)
+            self.scan_folder()
+    
+    # Music extraction methods (existing)
     def select_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Music Folder", self.current_folder)
         if folder:
@@ -463,7 +679,7 @@ class MusicMetadataManager(QMainWindow):
         
         # Switch to edit tab
         tab_widget = self.centralWidget().findChild(QTabWidget)
-        tab_widget.setCurrentIndex(1)
+        tab_widget.setCurrentIndex(2)  # Edit tab (now index 2)
         
         QMessageBox.information(self, "Extraction Complete", 
                                f"Successfully extracted metadata from {len(self.metadata)} files.")
@@ -478,7 +694,7 @@ class MusicMetadataManager(QMainWindow):
             self.metadata_table.setItem(i, 3, QTableWidgetItem(data.get('album', '')))
             self.metadata_table.setItem(i, 4, QTableWidgetItem(data.get('album_artist', '')))
             self.metadata_table.setItem(i, 5, QTableWidgetItem(data.get('genre', '')))
-            self.metadata_table.setItem(i, 6, QTableWidgetItem(data.get('year', '')))  # Year column
+            self.metadata_table.setItem(i, 6, QTableWidgetItem(data.get('year', '')))
             self.metadata_table.setItem(i, 7, QTableWidgetItem(data.get('track_number', '')))
             self.metadata_table.setItem(i, 8, QTableWidgetItem(data.get('disc_number', '')))
 
@@ -496,14 +712,14 @@ class MusicMetadataManager(QMainWindow):
             self.metadata[i]['album'] = self.metadata_table.item(i, 3).text()
             self.metadata[i]['album_artist'] = self.metadata_table.item(i, 4).text()
             self.metadata[i]['genre'] = self.metadata_table.item(i, 5).text()
-            self.metadata[i]['year'] = self.metadata_table.item(i, 6).text()  # Year column
+            self.metadata[i]['year'] = self.metadata_table.item(i, 6).text()
             self.metadata[i]['track_number'] = self.metadata_table.item(i, 7).text()
             self.metadata[i]['disc_number'] = self.metadata_table.item(i, 8).text()
         
         # Write to CSV
         with open(file_path, 'w', newline='', encoding='utf-8') as f:
             fieldnames = ['filename', 'title', 'artist', 'album', 'album_artist', 
-                        'genre', 'year', 'track_number', 'disc_number']  # Added year
+                        'genre', 'year', 'track_number', 'disc_number']
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(self.metadata)
@@ -546,7 +762,7 @@ class MusicMetadataManager(QMainWindow):
             "Album": 3, 
             "Album Artist": 4, 
             "Genre": 5,
-            "Year": 6  # Added Year
+            "Year": 6
         }
         
         field = self.bulk_field.currentText()
@@ -560,8 +776,6 @@ class MusicMetadataManager(QMainWindow):
         
         self.bulk_value.clear()
         self.bulk_value.addItems(sorted(values))
-
-    
     
     def apply_bulk_edit(self):
         # Apply the selected value to all selected rows
@@ -571,7 +785,7 @@ class MusicMetadataManager(QMainWindow):
             "Album": 3, 
             "Album Artist": 4, 
             "Genre": 5,
-            "Year": 6  # Added Year
+            "Year": 6
         }
         
         field = self.bulk_field.currentText()
@@ -586,7 +800,7 @@ class MusicMetadataManager(QMainWindow):
         
         # Apply value to all selected rows
         for row in selected_rows:
-            self.metadata_table.setItem(row, idx, QTableWidgetItem(value))    
+            self.metadata_table.setItem(row, idx, QTableWidgetItem(value))
 
     def update_files(self):
         # Make sure we have metadata and CSV
@@ -602,14 +816,14 @@ class MusicMetadataManager(QMainWindow):
             self.metadata[i]['album'] = self.metadata_table.item(i, 3).text()
             self.metadata[i]['album_artist'] = self.metadata_table.item(i, 4).text()
             self.metadata[i]['genre'] = self.metadata_table.item(i, 5).text()
-            self.metadata[i]['year'] = self.metadata_table.item(i, 6).text()  # Year is at index 6
-            self.metadata[i]['track_number'] = self.metadata_table.item(i, 7).text()  # Track # is at index 7
-            self.metadata[i]['disc_number'] = self.metadata_table.item(i, 8).text()  # Disc # is at index 8
+            self.metadata[i]['year'] = self.metadata_table.item(i, 6).text()
+            self.metadata[i]['track_number'] = self.metadata_table.item(i, 7).text()
+            self.metadata[i]['disc_number'] = self.metadata_table.item(i, 8).text()
         
         # Save updated metadata to CSV
         with open(self.csv_path, 'w', newline='', encoding='utf-8') as f:
             fieldnames = ['filename', 'title', 'artist', 'album', 'album_artist', 
-                        'genre', 'year', 'track_number', 'disc_number']  # Added year
+                        'genre', 'year', 'track_number', 'disc_number']
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(self.metadata)
@@ -635,6 +849,7 @@ class MusicMetadataManager(QMainWindow):
         
         # Start update
         self.update_thread.start()        
+    
     def update_progress(self, filename, status, details):
         # Add entry to results table
         row = self.results_table.rowCount()
@@ -658,9 +873,42 @@ class MusicMetadataManager(QMainWindow):
         QMessageBox.information(self, "Update Complete", status_text)
 
 # Worker thread classes
+class VideoConversionThread(QThread):
+    progress_update = pyqtSignal(str, str, str)
+    finished = pyqtSignal(dict)
+    
+    def __init__(self, input_folder, output_folder, quality, recursive, preserve_metadata, overwrite):
+        super().__init__()
+        self.input_folder = input_folder
+        self.output_folder = output_folder
+        self.quality = quality
+        self.recursive = recursive
+        self.preserve_metadata = preserve_metadata
+        self.overwrite = overwrite
+    
+    def run(self):
+        def progress_callback(filepath, status, details):
+            self.progress_update.emit(filepath, status, details)
+        
+        try:
+            stats = batch_convert_videos(
+                self.input_folder,
+                self.output_folder,
+                self.quality,
+                self.recursive,
+                self.preserve_metadata,
+                self.overwrite,
+                progress_callback
+            )
+            self.finished.emit(stats)
+        except Exception as e:
+            # Emit error stats
+            error_stats = {'total': 0, 'converted': 0, 'skipped': 0, 'failed': 1}
+            self.finished.emit(error_stats)
+
 class MetadataExtractionThread(QThread):
     progress_update = pyqtSignal(int, str, object)
-    finished = pyqtSignal()  # Add finished signal
+    finished = pyqtSignal()
     
     def __init__(self, files):
         super().__init__()
@@ -681,7 +929,7 @@ class MetadataExtractionThread(QThread):
                     'title': '',
                     'track_number': '',
                     'disc_number': '',
-                    'year': ''  # Added year
+                    'year': ''
                 }
                 
                 # Extract tags based on file type
@@ -713,7 +961,7 @@ class MetadataExtractionThread(QThread):
             except Exception as e:
                 self.progress_update.emit(i, f"Error: {str(e)}", None)
         
-        self.finished.emit()  # Emit finished signal when done
+        self.finished.emit()
 
 class MetadataUpdateThread(QThread):
     progress_update = pyqtSignal(str, str, str)

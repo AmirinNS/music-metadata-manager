@@ -1,0 +1,12 @@
+PyQt5==5.15.7
+mutagen==1.46.0
+
+# Note: FFmpeg is also required for video conversion functionality
+# FFmpeg must be installed separately and available in your system PATH
+# Download from: https://ffmpeg.org/download.html
+#
+# Installation instructions:
+# Windows: Download from https://ffmpeg.org/download.html and add to PATH
+# macOS: brew install ffmpeg
+# Ubuntu/Debian: sudo apt install ffmpeg
+# CentOS/RHEL: sudo yum install ffmpeg (with EPEL repository)
