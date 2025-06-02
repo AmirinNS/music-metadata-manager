@@ -8,8 +8,10 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTableWidget, QTableWidg
                             QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, 
                             QWidget, QLabel, QProgressBar, QMessageBox, QCheckBox,
                             QTabWidget, QSpinBox, QComboBox, QGroupBox, QFormLayout, 
-                            QHeaderView, QTextEdit, QLineEdit, QSlider)
+                            QHeaderView, QTextEdit, QLineEdit, QSlider, QMenuBar, 
+                            QMenu, QAction)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QKeySequence
 import mutagen
 from mutagen.mp3 import MP3, EasyMP3
 from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TRCK, TCON, TPOS
@@ -233,14 +235,13 @@ class MusicMetadataManager(QMainWindow):
         self.setGeometry(100, 100, 1400, 900)
         
         # Initialize variables
-        self.music_files = []
-        self.video_files = []
-        self.metadata = []
-        self.current_folder = os.path.expanduser("~")
-        self.csv_path = None
+        self.reset_application_state()
         
         # Check FFmpeg availability
         self.ffmpeg_available = check_ffmpeg()
+        
+        # Create menu bar first
+        self.create_menu_bar()
         
         # Create UI
         self.setup_ui()
@@ -251,22 +252,212 @@ class MusicMetadataManager(QMainWindow):
                                "Video conversion features will be disabled.\n\n"
                                "Please install FFmpeg to enable video conversion.")
         
+    def reset_application_state(self):
+        """Reset all application state variables to initial values"""
+        self.music_files = []
+        self.video_files = []
+        self.metadata = []
+        self.current_folder = os.path.expanduser("~")
+        self.csv_path = None
+        
+    def create_menu_bar(self):
+        """Create the menu bar with Windows menu"""
+        menubar = self.menuBar()
+        
+        # Windows Menu
+        windows_menu = menubar.addMenu('&Windows')
+        
+        # Reset/Start Fresh action
+        reset_action = QAction('&Reset Application', self)
+        reset_action.setShortcut(QKeySequence('Ctrl+R'))
+        reset_action.setStatusTip('Clear all data and start fresh')
+        reset_action.triggered.connect(self.reset_application)
+        windows_menu.addAction(reset_action)
+        
+        windows_menu.addSeparator()
+        
+        # Switch to tabs actions
+        convert_tab_action = QAction('Go to &Convert Videos Tab', self)
+        convert_tab_action.setShortcut(QKeySequence('Ctrl+1'))
+        convert_tab_action.triggered.connect(lambda: self.switch_to_tab(0))
+        windows_menu.addAction(convert_tab_action)
+        
+        extract_tab_action = QAction('Go to &Extract Metadata Tab', self)
+        extract_tab_action.setShortcut(QKeySequence('Ctrl+2'))
+        extract_tab_action.triggered.connect(lambda: self.switch_to_tab(1))
+        windows_menu.addAction(extract_tab_action)
+        
+        edit_tab_action = QAction('Go to E&dit Metadata Tab', self)
+        edit_tab_action.setShortcut(QKeySequence('Ctrl+3'))
+        edit_tab_action.triggered.connect(lambda: self.switch_to_tab(2))
+        windows_menu.addAction(edit_tab_action)
+        
+        update_tab_action = QAction('Go to &Update Files Tab', self)
+        update_tab_action.setShortcut(QKeySequence('Ctrl+4'))
+        update_tab_action.triggered.connect(lambda: self.switch_to_tab(3))
+        windows_menu.addAction(update_tab_action)
+        
+        windows_menu.addSeparator()
+        
+        # Clear data actions
+        clear_video_action = QAction('Clear Video Data', self)
+        clear_video_action.triggered.connect(self.clear_video_data)
+        windows_menu.addAction(clear_video_action)
+        
+        clear_metadata_action = QAction('Clear Metadata', self)
+        clear_metadata_action.triggered.connect(self.clear_metadata)
+        windows_menu.addAction(clear_metadata_action)
+        
+        # Help Menu
+        help_menu = menubar.addMenu('&Help')
+        
+        about_action = QAction('&About', self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+        
+        shortcuts_action = QAction('&Keyboard Shortcuts', self)
+        shortcuts_action.triggered.connect(self.show_shortcuts)
+        help_menu.addAction(shortcuts_action)
+        
+    def switch_to_tab(self, tab_index):
+        """Switch to a specific tab"""
+        tab_widget = self.centralWidget().findChild(QTabWidget)
+        if tab_widget and 0 <= tab_index < tab_widget.count():
+            tab_widget.setCurrentIndex(tab_index)
+    
+    def reset_application(self):
+        """Reset the entire application to initial state"""
+        reply = QMessageBox.question(
+            self, 
+            'Reset Application', 
+            'This will clear all loaded data and reset the application to its initial state.\n\n'
+            'Are you sure you want to continue?',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Reset application state
+            self.reset_application_state()
+            
+            # Clear all tables and UI elements
+            self.clear_all_ui_data()
+            
+            # Reset labels
+            self.video_folder_label.setText("No folder selected")
+            self.folder_label.setText("No folder selected")
+            self.csv_label.setText("No CSV file loaded")
+            self.output_folder_label.setText("Same as input folder")
+            
+            # Reset progress bars
+            self.conversion_progress_bar.setValue(0)
+            self.progress_bar.setValue(0)
+            
+            # Reset checkboxes to default states
+            self.recursive_video_checkbox.setChecked(True)
+            self.recursive_checkbox.setChecked(True)
+            self.output_folder_checkbox.setChecked(False)
+            self.overwrite_checkbox.setChecked(False)
+            self.preserve_metadata_checkbox.setChecked(False)
+            self.rename_checkbox.setChecked(True)
+            self.dry_run_checkbox.setChecked(False)
+            
+            # Reset combo boxes
+            self.quality_combo.setCurrentText('192k')
+            self.bulk_field.setCurrentIndex(0)
+            self.bulk_value.clear()
+            
+            # Switch to first tab
+            self.switch_to_tab(0)
+            
+            QMessageBox.information(self, 'Reset Complete', 'Application has been reset successfully!')
+    
+    def clear_video_data(self):
+        """Clear only video-related data"""
+        self.video_files = []
+        self.video_table.setRowCount(0)
+        self.conversion_progress_bar.setValue(0)
+        self.video_folder_label.setText("No folder selected")
+        QMessageBox.information(self, 'Video Data Cleared', 'Video data has been cleared.')
+    
+    def clear_metadata(self):
+        """Clear only metadata-related data"""
+        self.metadata = []
+        self.music_files = []
+        self.csv_path = None
+        self.file_table.setRowCount(0)
+        self.metadata_table.setRowCount(0)
+        self.results_table.setRowCount(0)
+        self.progress_bar.setValue(0)
+        self.folder_label.setText("No folder selected")
+        self.csv_label.setText("No CSV file loaded")
+        self.bulk_value.clear()
+        QMessageBox.information(self, 'Metadata Cleared', 'Metadata has been cleared.')
+    
+    def clear_all_ui_data(self):
+        """Clear all data from UI tables and lists"""
+        # Clear all tables
+        self.video_table.setRowCount(0)
+        self.file_table.setRowCount(0)
+        self.metadata_table.setRowCount(0)
+        self.results_table.setRowCount(0)
+        
+        # Clear bulk edit dropdown
+        self.bulk_value.clear()
+    
+    def show_about(self):
+        """Show about dialog"""
+        about_text = """
+        <h3>Music Metadata Manager with Video Converter</h3>
+        <p><b>Version:</b> 2.0.0</p>
+        <p><b>Author:</b> Your Name</p>
+        <br>
+        <p>A comprehensive tool for managing music metadata with video conversion capabilities.</p>
+        <br>
+        <p><b>Features:</b></p>
+        <ul>
+        <li>Convert videos to MP3 format</li>
+        <li>Extract metadata from audio files</li>
+        <li>Edit metadata in spreadsheet-like interface</li>
+        <li>Bulk update music files</li>
+        <li>Support for MP3, FLAC, M4A, OGG, WMA formats</li>
+        </ul>
+        <br>
+        <p><b>Dependencies:</b> PyQt5, Mutagen, FFmpeg</p>
+        """
+        QMessageBox.about(self, "About", about_text)
+    
+    def show_shortcuts(self):
+        """Show keyboard shortcuts dialog"""
+        shortcuts_text = """
+        <h3>Keyboard Shortcuts</h3>
+        <br>
+        <table>
+        <tr><td><b>Ctrl+R</b></td><td>Reset Application</td></tr>
+        <tr><td><b>Ctrl+1</b></td><td>Go to Convert Videos Tab</td></tr>
+        <tr><td><b>Ctrl+2</b></td><td>Go to Extract Metadata Tab</td></tr>
+        <tr><td><b>Ctrl+3</b></td><td>Go to Edit Metadata Tab</td></tr>
+        <tr><td><b>Ctrl+4</b></td><td>Go to Update Files Tab</td></tr>
+        </table>
+        """
+        QMessageBox.information(self, "Keyboard Shortcuts", shortcuts_text)
+        
     def setup_ui(self):
         # Main widget and layout
         main_widget = QWidget()
         main_layout = QVBoxLayout(main_widget)
         
         # Create tabs
-        tabs = QTabWidget()
+        self.tabs = QTabWidget()
         convert_tab = QWidget()
         extract_tab = QWidget()
         edit_tab = QWidget()
         update_tab = QWidget()
         
-        tabs.addTab(convert_tab, "Convert Videos")
-        tabs.addTab(extract_tab, "Extract Metadata")
-        tabs.addTab(edit_tab, "Edit Metadata")
-        tabs.addTab(update_tab, "Update Files")
+        self.tabs.addTab(convert_tab, "Convert Videos")
+        self.tabs.addTab(extract_tab, "Extract Metadata")
+        self.tabs.addTab(edit_tab, "Edit Metadata")
+        self.tabs.addTab(update_tab, "Update Files")
         
         # Setup each tab
         self.setup_convert_tab(convert_tab)
@@ -274,7 +465,7 @@ class MusicMetadataManager(QMainWindow):
         self.setup_edit_tab(edit_tab)
         self.setup_update_tab(update_tab)
         
-        main_layout.addWidget(tabs)
+        main_layout.addWidget(self.tabs)
         self.setCentralWidget(main_widget)
     
     def setup_convert_tab(self, tab):
@@ -614,8 +805,7 @@ class MusicMetadataManager(QMainWindow):
         
         if reply == QMessageBox.Yes:
             # Switch to extract tab and use the same folder
-            tab_widget = self.centralWidget().findChild(QTabWidget)
-            tab_widget.setCurrentIndex(1)  # Extract tab
+            self.switch_to_tab(1)  # Extract tab
             
             # Set folder for extraction
             if self.output_folder_checkbox.isChecked():
@@ -680,8 +870,7 @@ class MusicMetadataManager(QMainWindow):
         self.populate_metadata_table()
         
         # Switch to edit tab
-        tab_widget = self.centralWidget().findChild(QTabWidget)
-        tab_widget.setCurrentIndex(2)  # Edit tab (now index 2)
+        self.switch_to_tab(2)  # Edit tab
         
         QMessageBox.information(self, "Extraction Complete", 
                                f"Successfully extracted metadata from {len(self.metadata)} files.")
