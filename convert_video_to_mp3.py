@@ -4,6 +4,7 @@ import sys
 import argparse
 import subprocess
 import json
+import platform
 from pathlib import Path
 
 def is_video_file(filename):
@@ -23,6 +24,98 @@ def check_ffmpeg():
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
+def move_to_trash(file_path):
+    """
+    Move file to trash/recycle bin in a cross-platform way
+    Returns True if successful, False otherwise
+    """
+    try:
+        system = platform.system().lower()
+        
+        if system == 'windows':
+            # Windows - use send2trash if available, otherwise try shell command
+            try:
+                import send2trash
+                send2trash.send2trash(file_path)
+                return True
+            except ImportError:
+                # Fallback to PowerShell command
+                try:
+                    ps_command = f'Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("{file_path}", "OnlyErrorDialogs", "SendToRecycleBin")'
+                    subprocess.run(['powershell', '-Command', ps_command], check=True, capture_output=True)
+                    return True
+                except subprocess.CalledProcessError:
+                    return False
+                    
+        elif system == 'darwin':  # macOS
+            # Use osascript to move to Trash
+            try:
+                script = f'tell application "Finder" to delete POSIX file "{file_path}"'
+                subprocess.run(['osascript', '-e', script], check=True, capture_output=True)
+                return True
+            except subprocess.CalledProcessError:
+                # Fallback to mv to ~/.Trash
+                try:
+                    trash_path = os.path.expanduser('~/.Trash')
+                    filename = os.path.basename(file_path)
+                    dest_path = os.path.join(trash_path, filename)
+                    
+                    # Handle duplicate names
+                    counter = 1
+                    while os.path.exists(dest_path):
+                        name, ext = os.path.splitext(filename)
+                        dest_path = os.path.join(trash_path, f"{name}_{counter}{ext}")
+                        counter += 1
+                    
+                    os.rename(file_path, dest_path)
+                    return True
+                except (OSError, IOError):
+                    return False
+                    
+        elif system == 'linux':
+            # Linux - try multiple methods
+            try:
+                # Method 1: Try gio (GNOME)
+                subprocess.run(['gio', 'trash', file_path], check=True, capture_output=True)
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                try:
+                    # Method 2: Try kioclient5 (KDE)
+                    subprocess.run(['kioclient5', 'move', file_path, 'trash:/'], check=True, capture_output=True)
+                    return True
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    try:
+                        # Method 3: Use send2trash if available
+                        import send2trash
+                        send2trash.send2trash(file_path)
+                        return True
+                    except ImportError:
+                        # Method 4: Manual trash directory (XDG standard)
+                        try:
+                            trash_dir = os.path.expanduser('~/.local/share/Trash/files')
+                            os.makedirs(trash_dir, exist_ok=True)
+                            
+                            filename = os.path.basename(file_path)
+                            dest_path = os.path.join(trash_dir, filename)
+                            
+                            # Handle duplicate names
+                            counter = 1
+                            while os.path.exists(dest_path):
+                                name, ext = os.path.splitext(filename)
+                                dest_path = os.path.join(trash_dir, f"{name}_{counter}{ext}")
+                                counter += 1
+                            
+                            os.rename(file_path, dest_path)
+                            return True
+                        except (OSError, IOError):
+                            return False
+        
+        return False
+        
+    except Exception as e:
+        print(f"Error moving file to trash: {e}")
+        return False
+
 def get_video_info(video_path):
     """Get video information using ffprobe"""
     try:
@@ -34,10 +127,6 @@ def get_video_info(video_path):
         return json.loads(result.stdout)
     except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError):
         return None
-
-def extract_metadata_from_video(video_path):
-    """Extract metadata from video file (for backward compatibility)"""
-    return extract_audio_relevant_metadata(video_path)
 
 def extract_audio_relevant_metadata(video_path):
     """Extract only audio-relevant metadata from video file"""
@@ -52,42 +141,48 @@ def extract_audio_relevant_metadata(video_path):
         tags = info['format']['tags']
         
         # Only map audio-relevant metadata tags
-        # Exclude container/video-specific metadata
-        audio_relevant_tags = {
+        audio_relevant_mapping = {
             'title': 'title',
             'artist': 'artist', 
             'album': 'album',
             'album_artist': 'album_artist',
+            'albumartist': 'album_artist',  # Alternative spelling
             'genre': 'genre',
-            'track': 'track_number',
-            'date': 'year',
-            'year': 'year',
+            'track': 'track',
+            'date': 'date',
+            'year': 'date',
             'comment': 'comment',
             'composer': 'composer',
-            'performer': 'artist',
-            'albumartist': 'album_artist'
+            'performer': 'artist'  # Map performer to artist
         }
         
-        # Exclude these container/video-specific tags
+        # Explicitly exclude these container/video-specific tags
         exclude_tags = {
             'major_brand', 'minor_version', 'compatible_brands',
-            'encoder', 'encodersettings', 'encoder_settings', 'creation_time',
+            'encoder', 'encoder_settings', 'creation_time',
             'location', 'location-eng', 'com.android.version',
-            'handler_name', 'vendor_id', 'timecode'
+            'handler_name', 'vendor_id', 'timecode', 'rotate',
+            'duration', 'bitrate', 'fps'
         }
         
-        for video_tag, audio_tag in audio_relevant_tags.items():
-            # Check both lowercase and uppercase versions
-            for tag_variant in [video_tag, video_tag.upper(), video_tag.lower()]:
-                if tag_variant in tags and tag_variant.lower() not in exclude_tags:
-                    metadata[audio_tag] = tags[tag_variant]
-                    break
+        for tag_key, tag_value in tags.items():
+            tag_key_lower = tag_key.lower()
+            
+            # Skip excluded tags
+            if tag_key_lower in exclude_tags:
+                continue
+                
+            # Check if this tag maps to an audio-relevant field
+            if tag_key_lower in audio_relevant_mapping:
+                audio_field = audio_relevant_mapping[tag_key_lower]
+                if tag_value and str(tag_value).strip():
+                    metadata[audio_field] = str(tag_value).strip()
     
     return metadata
 
 def convert_video_to_mp3(video_path, output_path=None, quality='192k', 
                         preserve_metadata=True, overwrite=False, progress_callback=None,
-                        clean_metadata=True):
+                        clean_metadata=True, delete_video_after=False):
     """
     Convert a video file to MP3 using FFmpeg
     
@@ -99,6 +194,7 @@ def convert_video_to_mp3(video_path, output_path=None, quality='192k',
         overwrite: Whether to overwrite existing output files
         progress_callback: Callback function for progress updates
         clean_metadata: Whether to filter out video-specific metadata
+        delete_video_after: Whether to move video to trash after successful conversion
         
     Returns:
         Path to the output MP3 file if successful, None if failed
@@ -139,7 +235,7 @@ def convert_video_to_mp3(video_path, output_path=None, quality='192k',
         
         # Handle metadata preservation
         if preserve_metadata and clean_metadata:
-            # METHOD 1: Remove all metadata first, then add only audio-relevant metadata
+            # Remove all metadata first, then add only audio-relevant metadata
             cmd.extend(['-map_metadata', '-1'])  # Remove all metadata
             
             # Extract only audio-relevant metadata from the source
@@ -175,8 +271,21 @@ def convert_video_to_mp3(video_path, output_path=None, quality='192k',
         # Run conversion
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         
-        if progress_callback:
-            progress_callback(video_path, "Completed", f"Converted to {os.path.basename(output_path)}")
+        # Conversion successful - handle video deletion if requested
+        conversion_message = f"Converted to {os.path.basename(output_path)}"
+        
+        if delete_video_after:
+            if move_to_trash(video_path):
+                conversion_message += " (video moved to trash)"
+                if progress_callback:
+                    progress_callback(video_path, "Completed", conversion_message)
+            else:
+                conversion_message += " (failed to move video to trash)"
+                if progress_callback:
+                    progress_callback(video_path, "Completed", conversion_message)
+        else:
+            if progress_callback:
+                progress_callback(video_path, "Completed", conversion_message)
         
         return output_path
         
@@ -191,62 +300,9 @@ def convert_video_to_mp3(video_path, output_path=None, quality='192k',
             progress_callback(video_path, "Failed", error_msg)
         raise RuntimeError(error_msg)
 
-def extract_audio_relevant_metadata(video_path):
-    """Extract only audio-relevant metadata from video file"""
-    info = get_video_info(video_path)
-    if not info:
-        return {}
-    
-    metadata = {}
-    
-    # Try to get metadata from format section
-    if 'format' in info and 'tags' in info['format']:
-        tags = info['format']['tags']
-        
-        # Only map audio-relevant metadata tags
-        # Exclude container/video-specific metadata
-        audio_relevant_mapping = {
-            'title': 'title',
-            'artist': 'artist', 
-            'album': 'album',
-            'album_artist': 'album_artist',
-            'albumartist': 'album_artist',  # Alternative spelling
-            'genre': 'genre',
-            'track': 'track',
-            'date': 'date',
-            'year': 'date',
-            'comment': 'comment',
-            'composer': 'composer',
-            'performer': 'artist'  # Map performer to artist
-        }
-        
-        # Explicitly exclude these container/video-specific tags
-        exclude_tags = {
-            'major_brand', 'minor_version', 'compatible_brands',
-            'encoder', 'encoder_settings', 'creation_time',
-            'location', 'location-eng', 'com.android.version',
-            'handler_name', 'vendor_id', 'timecode', 'rotate',
-            'duration', 'bitrate', 'fps'
-        }
-        
-        for tag_key, tag_value in tags.items():
-            tag_key_lower = tag_key.lower()
-            
-            # Skip excluded tags
-            if tag_key_lower in exclude_tags:
-                continue
-                
-            # Check if this tag maps to an audio-relevant field
-            if tag_key_lower in audio_relevant_mapping:
-                audio_field = audio_relevant_mapping[tag_key_lower]
-                if tag_value and str(tag_value).strip():
-                    metadata[audio_field] = str(tag_value).strip()
-    
-    return metadata
-
 def batch_convert_videos(input_folder, output_folder=None, quality='192k', 
                         recursive=True, preserve_metadata=True, overwrite=False,
-                        progress_callback=None, clean_metadata=True):
+                        progress_callback=None, clean_metadata=True, delete_videos_after=False):
     """
     Convert all video files in a folder to MP3
     
@@ -259,6 +315,7 @@ def batch_convert_videos(input_folder, output_folder=None, quality='192k',
         overwrite: Whether to overwrite existing MP3 files
         progress_callback: Callback function for progress updates
         clean_metadata: Whether to filter out video-specific metadata
+        delete_videos_after: Whether to move videos to trash after successful conversion
         
     Returns:
         Dictionary with conversion statistics
@@ -291,7 +348,8 @@ def batch_convert_videos(input_folder, output_folder=None, quality='192k',
         'total': len(video_files),
         'converted': 0,
         'skipped': 0,
-        'failed': 0
+        'failed': 0,
+        'deleted': 0  # New stat for deleted videos
     }
     
     for i, video_path in enumerate(video_files):
@@ -312,11 +370,15 @@ def batch_convert_videos(input_folder, output_folder=None, quality='192k',
             # Convert video
             result_path = convert_video_to_mp3(
                 video_path, output_path, quality, 
-                preserve_metadata, overwrite, progress_callback, clean_metadata
+                preserve_metadata, overwrite, progress_callback, 
+                clean_metadata, delete_videos_after
             )
             
             if result_path:
                 stats['converted'] += 1
+                # Check if video was actually deleted
+                if delete_videos_after and not os.path.exists(video_path):
+                    stats['deleted'] += 1
             else:
                 stats['skipped'] += 1
                 
@@ -328,7 +390,7 @@ def batch_convert_videos(input_folder, output_folder=None, quality='192k',
     return stats
 
 def main():
-    parser = argparse.ArgumentParser(description='Convert video files to MP3 using FFmpeg')
+    parser = argparse.ArgumentParser(description='Convert video files to MP3 using FFmpeg with auto-delete option')
     parser.add_argument('input', help='Input video file or folder')
     parser.add_argument('-o', '--output', help='Output file or folder (optional)')
     parser.add_argument('-q', '--quality', default='192k', 
@@ -341,6 +403,8 @@ def main():
                        help='Keep video-specific metadata (not recommended)')
     parser.add_argument('--overwrite', action='store_true',
                        help='Overwrite existing output files')
+    parser.add_argument('--delete-videos', action='store_true',
+                       help='Move video files to trash after successful conversion')
     parser.add_argument('-v', '--verbose', action='store_true',
                        help='Verbose output')
     
@@ -351,6 +415,14 @@ def main():
         print("Error: FFmpeg not found. Please install FFmpeg and ensure it's in your PATH.")
         print("Visit https://ffmpeg.org/download.html for installation instructions.")
         return 1
+    
+    # Show warning if delete option is used
+    if args.delete_videos:
+        print("WARNING: Video files will be moved to trash after successful conversion.")
+        response = input("Are you sure you want to continue? (y/N): ")
+        if response.lower() not in ['y', 'yes']:
+            print("Operation cancelled.")
+            return 0
     
     input_path = os.path.normpath(os.path.expanduser(args.input))
     
@@ -370,11 +442,14 @@ def main():
             result = convert_video_to_mp3(
                 input_path, output_path, args.quality,
                 not args.no_metadata, args.overwrite, progress_callback,
-                not args.keep_video_metadata  # clean_metadata
+                not args.keep_video_metadata,  # clean_metadata
+                args.delete_videos  # delete_video_after
             )
             
             if result:
                 print(f"Successfully converted: {result}")
+                if args.delete_videos and not os.path.exists(input_path):
+                    print("Video file moved to trash.")
             else:
                 print("Conversion skipped (file already exists)")
                 
@@ -383,7 +458,8 @@ def main():
             stats = batch_convert_videos(
                 input_path, args.output, args.quality,
                 args.recursive, not args.no_metadata, args.overwrite,
-                progress_callback, not args.keep_video_metadata  # clean_metadata
+                progress_callback, not args.keep_video_metadata,  # clean_metadata
+                args.delete_videos  # delete_videos_after
             )
             
             print(f"\nConversion complete:")
@@ -391,6 +467,8 @@ def main():
             print(f"Converted: {stats['converted']}")
             print(f"Skipped: {stats['skipped']}")
             print(f"Failed: {stats['failed']}")
+            if args.delete_videos:
+                print(f"Videos moved to trash: {stats['deleted']}")
             
         else:
             print(f"Error: Input path does not exist: {input_path}")

@@ -4,6 +4,7 @@ import sys
 import csv
 import re
 import subprocess
+import platform
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTableWidget, QTableWidgetItem, 
                             QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, 
                             QWidget, QLabel, QProgressBar, QMessageBox, QCheckBox,
@@ -50,7 +51,8 @@ try:
             batch_convert_videos, 
             is_video_file,
             check_ffmpeg,
-            convert_video_to_mp3
+            convert_video_to_mp3,
+            move_to_trash  # Import the new trash function
         )
         VIDEO_CONVERSION_AVAILABLE = True
     except ImportError:
@@ -63,6 +65,89 @@ except ImportError as e:
 else:
     scripts_import_error = None
 
+def move_to_trash_fallback(file_path):
+    """
+    Fallback implementation of move_to_trash in case it's not imported
+    """
+    try:
+        system = platform.system().lower()
+        
+        if system == 'windows':
+            try:
+                import send2trash
+                send2trash.send2trash(file_path)
+                return True
+            except ImportError:
+                try:
+                    ps_command = f'Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("{file_path}", "OnlyErrorDialogs", "SendToRecycleBin")'
+                    subprocess.run(['powershell', '-Command', ps_command], check=True, capture_output=True)
+                    return True
+                except subprocess.CalledProcessError:
+                    return False
+                    
+        elif system == 'darwin':  # macOS
+            try:
+                script = f'tell application "Finder" to delete POSIX file "{file_path}"'
+                subprocess.run(['osascript', '-e', script], check=True, capture_output=True)
+                return True
+            except subprocess.CalledProcessError:
+                try:
+                    trash_path = os.path.expanduser('~/.Trash')
+                    filename = os.path.basename(file_path)
+                    dest_path = os.path.join(trash_path, filename)
+                    
+                    counter = 1
+                    while os.path.exists(dest_path):
+                        name, ext = os.path.splitext(filename)
+                        dest_path = os.path.join(trash_path, f"{name}_{counter}{ext}")
+                        counter += 1
+                    
+                    os.rename(file_path, dest_path)
+                    return True
+                except (OSError, IOError):
+                    return False
+                    
+        elif system == 'linux':
+            try:
+                subprocess.run(['gio', 'trash', file_path], check=True, capture_output=True)
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                try:
+                    subprocess.run(['kioclient5', 'move', file_path, 'trash:/'], check=True, capture_output=True)
+                    return True
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    try:
+                        import send2trash
+                        send2trash.send2trash(file_path)
+                        return True
+                    except ImportError:
+                        try:
+                            trash_dir = os.path.expanduser('~/.local/share/Trash/files')
+                            os.makedirs(trash_dir, exist_ok=True)
+                            
+                            filename = os.path.basename(file_path)
+                            dest_path = os.path.join(trash_dir, filename)
+                            
+                            counter = 1
+                            while os.path.exists(dest_path):
+                                name, ext = os.path.splitext(filename)
+                                dest_path = os.path.join(trash_dir, f"{name}_{counter}{ext}")
+                                counter += 1
+                            
+                            os.rename(file_path, dest_path)
+                            return True
+                        except (OSError, IOError):
+                            return False
+        
+        return False
+        
+    except Exception as e:
+        print(f"Error moving file to trash: {e}")
+        return False
+
+# Use imported move_to_trash if available, otherwise use fallback
+if 'move_to_trash' not in globals():
+    move_to_trash = move_to_trash_fallback
 
 def update_tags_from_csv_with_callback(csv_file, input_folder, dry_run=False, verbose=False, 
                                       recursive=False, rename_files=False, progress_callback=None):
@@ -359,6 +444,7 @@ class MusicMetadataManager(QMainWindow):
             self.output_folder_checkbox.setChecked(False)
             self.overwrite_checkbox.setChecked(False)
             self.preserve_metadata_checkbox.setChecked(False)
+            self.delete_videos_checkbox.setChecked(False)  # Reset delete videos checkbox
             self.rename_checkbox.setChecked(True)
             self.dry_run_checkbox.setChecked(False)
             
@@ -409,18 +495,15 @@ class MusicMetadataManager(QMainWindow):
         """Show about dialog"""
         about_text = """
         <h3>Music Metadata Manager with Video Converter</h3>
-        <p><b>Version:</b> 2.0.0</p>
-        <p><b>Author:</b> Your Name</p>
-        <br>
-        <p>A comprehensive tool for managing music metadata with video conversion capabilities.</p>
-        <br>
+        <p><b>Version:</b> 2.1.0</p>
         <p><b>Features:</b></p>
         <ul>
-        <li>Convert videos to MP3 format</li>
+        <li>Convert videos to MP3 format with auto-delete option</li>
         <li>Extract metadata from audio files</li>
         <li>Edit metadata in spreadsheet-like interface</li>
         <li>Bulk update music files</li>
         <li>Support for MP3, FLAC, M4A, OGG, WMA formats</li>
+        <li>Cross-platform trash/recycle bin support</li>
         </ul>
         <br>
         <p><b>Dependencies:</b> PyQt5, Mutagen, FFmpeg</p>
@@ -514,6 +597,12 @@ class MusicMetadataManager(QMainWindow):
         self.preserve_metadata_checkbox = QCheckBox("Preserve video metadata")
         self.preserve_metadata_checkbox.setChecked(False)
         
+        # NEW: Auto-delete videos option
+        self.delete_videos_checkbox = QCheckBox("Move videos to trash after conversion")
+        self.delete_videos_checkbox.setChecked(False)
+        self.delete_videos_checkbox.setStyleSheet("font-weight: bold; color: #d63031;")
+        self.delete_videos_checkbox.setToolTip("Videos will be moved to trash/recycle bin after successful conversion")
+        
         options_layout.addRow("Include subfolders:", self.recursive_video_checkbox)
         options_layout.addRow("Audio quality:", self.quality_combo)
         options_layout.addRow(self.output_folder_checkbox)
@@ -521,6 +610,7 @@ class MusicMetadataManager(QMainWindow):
         options_layout.addRow("", self.output_folder_label)
         options_layout.addRow(self.overwrite_checkbox)
         options_layout.addRow(self.preserve_metadata_checkbox)
+        options_layout.addRow(self.delete_videos_checkbox)  # Add the new checkbox
         
         options_group.setLayout(options_layout)
         
@@ -744,6 +834,20 @@ class MusicMetadataManager(QMainWindow):
             QMessageBox.warning(self, "No Videos", "Please select a folder with video files first.")
             return
         
+        # Show warning if delete option is checked
+        if self.delete_videos_checkbox.isChecked():
+            reply = QMessageBox.question(
+                self, 
+                'Delete Videos After Conversion', 
+                'You have selected to move video files to trash after successful conversion.\n\n'
+                'This action cannot be easily undone. Are you sure you want to continue?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.No:
+                return
+        
         # Get conversion settings
         quality = self.quality_combo.currentText()
         output_folder = None
@@ -755,6 +859,7 @@ class MusicMetadataManager(QMainWindow):
         
         overwrite = self.overwrite_checkbox.isChecked()
         preserve_metadata = self.preserve_metadata_checkbox.isChecked()
+        delete_videos = self.delete_videos_checkbox.isChecked()
         
         # Start conversion in background thread
         self.conversion_thread = VideoConversionThread(
@@ -763,7 +868,8 @@ class MusicMetadataManager(QMainWindow):
             quality,
             self.recursive_video_checkbox.isChecked(),
             preserve_metadata,
-            overwrite
+            overwrite,
+            delete_videos  # Pass the delete option
         )
         
         self.conversion_thread.progress_update.connect(self.update_conversion_progress)
@@ -790,15 +896,25 @@ class MusicMetadataManager(QMainWindow):
         self.conversion_progress_bar.setValue(int(progress))
     
     def conversion_finished(self, stats):
-        # Show summary and offer to extract metadata from converted files
-        message = (
-            f"Video conversion complete!\n\n"
-            f"Total videos: {stats['total']}\n"
-            f"Converted: {stats['converted']}\n"
-            f"Skipped: {stats['skipped']}\n"
-            f"Failed: {stats['failed']}\n\n"
+        # Show summary with delete stats
+        message_parts = [
+            f"Video conversion complete!",
+            f"",
+            f"Total videos: {stats['total']}",
+            f"Converted: {stats['converted']}",
+            f"Skipped: {stats['skipped']}",
+            f"Failed: {stats['failed']}"
+        ]
+        
+        if 'deleted' in stats and stats['deleted'] > 0:
+            message_parts.append(f"Videos moved to trash: {stats['deleted']}")
+        
+        message_parts.extend([
+            f"",
             f"Would you like to extract metadata from the converted MP3 files?"
-        )
+        ])
+        
+        message = "\n".join(message_parts)
         
         reply = QMessageBox.question(self, "Conversion Complete", message,
                                    QMessageBox.Yes | QMessageBox.No)
@@ -1068,7 +1184,7 @@ class VideoConversionThread(QThread):
     progress_update = pyqtSignal(str, str, str)
     finished = pyqtSignal(dict)
     
-    def __init__(self, input_folder, output_folder, quality, recursive, preserve_metadata, overwrite):
+    def __init__(self, input_folder, output_folder, quality, recursive, preserve_metadata, overwrite, delete_videos_after):
         super().__init__()
         self.input_folder = input_folder
         self.output_folder = output_folder
@@ -1076,6 +1192,7 @@ class VideoConversionThread(QThread):
         self.recursive = recursive
         self.preserve_metadata = preserve_metadata
         self.overwrite = overwrite
+        self.delete_videos_after = delete_videos_after  # New parameter
     
     def run(self):
         def progress_callback(filepath, status, details):
@@ -1089,12 +1206,14 @@ class VideoConversionThread(QThread):
                 self.recursive,
                 self.preserve_metadata,
                 self.overwrite,
-                progress_callback
+                progress_callback,
+                True,  # clean_metadata
+                self.delete_videos_after  # Pass delete option
             )
             self.finished.emit(stats)
         except Exception as e:
             # Emit error stats
-            error_stats = {'total': 0, 'converted': 0, 'skipped': 0, 'failed': 1}
+            error_stats = {'total': 0, 'converted': 0, 'skipped': 0, 'failed': 1, 'deleted': 0}
             self.finished.emit(error_stats)
 
 class MetadataExtractionThread(QThread):

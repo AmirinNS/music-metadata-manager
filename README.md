@@ -23,6 +23,7 @@ music-metadata-manager/
 - **Quality control** with selectable bitrates (128k, 192k, 256k, 320k)
 - **Metadata preservation** from video files to MP3 tags
 - **Flexible output options** (same folder or separate output folder)
+- **🗑️ Auto-delete videos** after successful conversion (move to trash/recycle bin)
 
 ### 🎵 Metadata Management
 - **Extract metadata** from multiple audio file formats (MP3, FLAC, M4A, OGG, WMA)
@@ -33,7 +34,7 @@ music-metadata-manager/
 - **CSV import/export** for external editing and backup
 
 ### 🔄 Complete Workflow
-1. **Convert** video files to MP3
+1. **Convert** video files to MP3 (with optional auto-delete)
 2. **Extract** metadata from converted files
 3. **Edit** tags in the GUI
 4. **Update** files with new metadata
@@ -45,6 +46,7 @@ music-metadata-manager/
 - **Selective data clearing** (videos only, metadata only, or everything)
 - **Keyboard shortcuts** for power users
 - **Help system** with about dialog and shortcuts reference
+- **Safety confirmations** for destructive operations
 
 ## Installation
 
@@ -54,6 +56,7 @@ music-metadata-manager/
 - **PyQt5**
 - **Mutagen library**
 - **FFmpeg** (for video conversion)
+- **send2trash** (optional, for better cross-platform trash support)
 
 ### FFmpeg Installation
 
@@ -118,9 +121,21 @@ The application features a tabbed interface with a Windows menu for easy navigat
    - **Output folder**: Optionally use a separate output folder
    - **Overwrite existing**: Replace existing MP3 files
    - **Preserve metadata**: Keep video metadata in MP3 tags
+   - **🗑️ Move videos to trash**: Auto-delete videos after successful conversion
 4. Click **Convert Videos to MP3** to start the conversion
-5. Monitor progress in the table and progress bar
-6. When complete, you'll be prompted to extract metadata from the converted files
+5. **Confirm deletion warning** if auto-delete is enabled
+6. Monitor progress in the table and progress bar
+7. When complete, you'll be prompted to extract metadata from the converted files
+
+### Auto-Delete Feature
+
+The **"Move videos to trash after conversion"** option provides:
+- **Cross-platform support**: Works on Windows (Recycle Bin), macOS (Trash), and Linux
+- **Safety confirmation**: Warning dialog before conversion starts
+- **Visual indicators**: Red/bold checkbox styling and tooltips
+- **Safe deletion**: Files moved to trash, not permanently deleted
+- **Progress reporting**: Shows deletion status in conversion results
+- **Fallback methods**: Multiple deletion methods for maximum compatibility
 
 ### Extracting Metadata
 
@@ -174,10 +189,18 @@ The video conversion uses FFmpeg with the following parameters:
 - **Channels**: Stereo (2 channels)
 - **Bitrates**: 128k, 192k, 256k, 320k (user selectable)
 
+### Auto-Delete Implementation
+
+Cross-platform file deletion to trash/recycle bin:
+- **Windows**: PowerShell commands or send2trash library
+- **macOS**: AppleScript or ~/.Trash directory
+- **Linux**: gio/kioclient5 commands or XDG trash standard
+- **Fallback**: Multiple methods ensure compatibility across systems
+
 ### Threading Architecture
 
 The application uses multi-threading for responsive UI:
-- `VideoConversionThread`: Handles video-to-MP3 conversion
+- `VideoConversionThread`: Handles video-to-MP3 conversion with delete option
 - `MetadataExtractionThread`: Processes metadata extraction
 - `MetadataUpdateThread`: Manages file updates
 
@@ -187,6 +210,7 @@ The application uses multi-threading for responsive UI:
 - **Graceful degradation** when FFmpeg is not available
 - **Comprehensive error reporting** during conversion and processing
 - **Progress tracking** with detailed status messages
+- **Safe deletion verification** with fallback error handling
 
 ## Supported File Formats
 
@@ -206,6 +230,7 @@ The application uses multi-threading for responsive UI:
 - **Output organization**: Maintain folder structure in output directory
 - **Metadata preservation**: Copy video metadata to MP3 tags
 - **Overwrite control**: Skip or replace existing files
+- **Auto-delete**: Move source videos to trash after successful conversion
 
 ### Filename Patterns
 
@@ -221,7 +246,7 @@ The application recognizes these filename patterns for track extraction:
 ### Video Conversion Script
 
 ```bash
-python convert_video_to_mp3.py /path/to/videos -o /output/folder -q 192k -r --overwrite
+python convert_video_to_mp3.py /path/to/videos -o /output/folder -q 192k -r --overwrite --delete-videos
 ```
 
 Options:
@@ -230,6 +255,7 @@ Options:
 - `-r, --recursive`: Search subdirectories
 - `--no-metadata`: Don't preserve video metadata
 - `--overwrite`: Overwrite existing files
+- `--delete-videos`: Move video files to trash after successful conversion
 - `-v, --verbose`: Verbose output
 
 ### Metadata Extraction Script
@@ -246,20 +272,21 @@ python update_music_metadata.py metadata.csv /path/to/music -r -n
 
 ## Workflow Examples
 
-### Complete Video-to-Music Workflow
+### Complete Video-to-Music Workflow with Auto-Delete
 
 1. **Download music videos** and organize by album in folders
-2. **Convert videos** using the Convert Videos tab
-3. **Extract metadata** from the converted MP3 files
-4. **Edit tags** to add missing information (album, artist, etc.)
-5. **Update files** to apply the metadata and rename with track numbers
-6. **Reset application** (Ctrl+R) to process another folder
+2. **Convert videos** using the Convert Videos tab with auto-delete enabled
+3. **Confirm deletion warning** and monitor conversion progress
+4. **Extract metadata** from the converted MP3 files (videos automatically deleted)
+5. **Edit tags** to add missing information (album, artist, etc.)
+6. **Update files** to apply the metadata and rename with track numbers
+7. **Reset application** (Ctrl+R) to process another folder
 
 ### Batch Processing Large Collections
 
 1. **Organize videos** in album folders under a main directory
-2. **Enable recursive scanning** to process all subfolders
-3. **Use separate output folder** to keep originals intact
+2. **Enable recursive scanning** and auto-delete to process all subfolders
+3. **Use separate output folder** to keep workflow organized
 4. **Process in batches** if dealing with very large collections
 5. **Verify results** using dry-run mode before final update
 6. **Use selective clearing** to process multiple collections without restart
@@ -277,6 +304,12 @@ python update_music_metadata.py metadata.csv /path/to/music -r -n
 - Check if video files are corrupted
 - Ensure sufficient disk space for output files
 - Some DRM-protected videos cannot be converted
+
+**Auto-delete not working:**
+- Check file permissions and disk space
+- Ensure videos aren't locked by other applications
+- Fallback methods will attempt different deletion approaches
+- Files may remain if all deletion methods fail
 
 **Metadata not extracted:**
 - Some video files may not contain metadata
@@ -368,8 +401,9 @@ The generated MP3 files work with:
 
 - **No network access**: All processing is done locally
 - **No data collection**: No usage statistics or personal data is transmitted
-- **File safety**: Original video files are never modified (unless overwrite is enabled)
+- **File safety**: Original video files are safely moved to trash (not permanently deleted)
 - **Metadata privacy**: All tag information remains on your local system
+- **Reversible deletion**: Files can be recovered from trash/recycle bin
 
 ## Contributing
 
@@ -407,9 +441,18 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - **[Mutagen](https://mutagen.readthedocs.io/)** for audio metadata handling
 - **[PyQt5](https://www.riverbankcomputing.com/software/pyqt/)** for the GUI framework
 - **[FFmpeg](https://ffmpeg.org/)** for video/audio conversion capabilities
+- **[send2trash](https://github.com/arsenetar/send2trash)** for cross-platform trash support
 - **Community contributors** for testing and feedback
 
 ## Changelog
+
+### Version 2.2.0
+- ✨ Added auto-delete option for videos after successful conversion
+- ✨ Implemented cross-platform trash/recycle bin support (Windows/macOS/Linux)
+- ✨ Added safety confirmation dialog for destructive operations
+- ✨ Enhanced progress reporting with deletion status
+- 🛡️ Multiple fallback methods for reliable file deletion
+- 📚 Updated CLI with --delete-videos option
 
 ### Version 2.1.0
 - ✨ Added Windows menu with reset functionality

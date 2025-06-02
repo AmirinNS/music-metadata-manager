@@ -1,5 +1,6 @@
 PyQt5==5.15.7
 mutagen==1.46.0
+send2trash==1.8.2
 
 # Note: FFmpeg is also required for video conversion functionality
 # FFmpeg must be installed separately and available in your system PATH
@@ -10,3 +11,6 @@ mutagen==1.46.0
 # macOS: brew install ffmpeg
 # Ubuntu/Debian: sudo apt install ffmpeg
 # CentOS/RHEL: sudo yum install ffmpeg (with EPEL repository)
+#
+# Optional: send2trash provides better cross-platform trash/recycle bin support
+# If not installed, the application will use fallback methods for moving files to trash
