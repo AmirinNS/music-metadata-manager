@@ -41,24 +41,26 @@ try:
         update_wma_tags,
         update_tags_from_csv
     )
-    
-    # Import from converter script
-    from convert_video_to_mp3 import (
-        is_video_file,
-        check_ffmpeg,
-        convert_video_to_mp3,
-        batch_convert_videos,
-        extract_metadata_from_video
-    )
+
+    # Try to import video conversion functionality
+    try:
+        from convert_video_to_mp3 import (
+            batch_convert_videos, 
+            is_video_file,
+            check_ffmpeg,
+            convert_video_to_mp3
+        )
+        VIDEO_CONVERSION_AVAILABLE = True
+    except ImportError:
+        VIDEO_CONVERSION_AVAILABLE = False
     
     print("Successfully imported functions from all scripts")
-    
 except ImportError as e:
     print(f"Error importing scripts: {e}")
-    QMessageBox.critical(None, "Script Import Error", 
-                        f"Could not import functions from scripts: {e}\n\n"
-                        "Make sure all scripts are in the same directory as this application.")
-    sys.exit(1)
+    scripts_import_error = str(e)
+else:
+    scripts_import_error = None
+
 
 def update_tags_from_csv_with_callback(csv_file, input_folder, dry_run=False, verbose=False, 
                                       recursive=False, rename_files=False, progress_callback=None):
@@ -319,7 +321,7 @@ class MusicMetadataManager(QMainWindow):
         
         self.overwrite_checkbox = QCheckBox("Overwrite existing MP3 files")
         self.preserve_metadata_checkbox = QCheckBox("Preserve video metadata")
-        self.preserve_metadata_checkbox.setChecked(True)
+        self.preserve_metadata_checkbox.setChecked(False)
         
         options_layout.addRow("Include subfolders:", self.recursive_video_checkbox)
         options_layout.addRow("Audio quality:", self.quality_combo)
@@ -486,7 +488,7 @@ class MusicMetadataManager(QMainWindow):
         self.rename_checkbox.setChecked(True)
         
         self.dry_run_checkbox = QCheckBox("Dry run (no actual changes)")
-        self.dry_run_checkbox.setChecked(True)
+        self.dry_run_checkbox.setChecked(False)
         
         options_layout.addRow(self.rename_checkbox)
         options_layout.addRow(self.dry_run_checkbox)
@@ -997,7 +999,14 @@ class MetadataUpdateThread(QThread):
 # Main application
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")  # Modern look across platforms
+    app.setStyle("Fusion")
+    
+    # Check for import errors AFTER creating QApplication
+    if scripts_import_error:
+        QMessageBox.critical(None, "Script Import Error", 
+                            f"Could not import functions from scripts: {scripts_import_error}")
+        sys.exit(1)
+    
     window = MusicMetadataManager()
     window.show()
     sys.exit(app.exec_())

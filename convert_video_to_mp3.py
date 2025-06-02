@@ -36,7 +36,11 @@ def get_video_info(video_path):
         return None
 
 def extract_metadata_from_video(video_path):
-    """Extract metadata from video file"""
+    """Extract metadata from video file (for backward compatibility)"""
+    return extract_audio_relevant_metadata(video_path)
+
+def extract_audio_relevant_metadata(video_path):
+    """Extract only audio-relevant metadata from video file"""
     info = get_video_info(video_path)
     if not info:
         return {}
@@ -47,29 +51,43 @@ def extract_metadata_from_video(video_path):
     if 'format' in info and 'tags' in info['format']:
         tags = info['format']['tags']
         
-        # Map common video metadata tags to audio metadata
-        tag_mapping = {
+        # Only map audio-relevant metadata tags
+        # Exclude container/video-specific metadata
+        audio_relevant_tags = {
             'title': 'title',
-            'artist': 'artist',
+            'artist': 'artist', 
             'album': 'album',
             'album_artist': 'album_artist',
             'genre': 'genre',
             'track': 'track_number',
             'date': 'year',
-            'comment': 'comment'
+            'year': 'year',
+            'comment': 'comment',
+            'composer': 'composer',
+            'performer': 'artist',
+            'albumartist': 'album_artist'
         }
         
-        for video_tag, audio_tag in tag_mapping.items():
-            if video_tag in tags:
-                metadata[audio_tag] = tags[video_tag]
-            # Also check uppercase versions
-            elif video_tag.upper() in tags:
-                metadata[audio_tag] = tags[video_tag.upper()]
+        # Exclude these container/video-specific tags
+        exclude_tags = {
+            'major_brand', 'minor_version', 'compatible_brands',
+            'encoder', 'encodersettings', 'encoder_settings', 'creation_time',
+            'location', 'location-eng', 'com.android.version',
+            'handler_name', 'vendor_id', 'timecode'
+        }
+        
+        for video_tag, audio_tag in audio_relevant_tags.items():
+            # Check both lowercase and uppercase versions
+            for tag_variant in [video_tag, video_tag.upper(), video_tag.lower()]:
+                if tag_variant in tags and tag_variant.lower() not in exclude_tags:
+                    metadata[audio_tag] = tags[tag_variant]
+                    break
     
     return metadata
 
 def convert_video_to_mp3(video_path, output_path=None, quality='192k', 
-                        preserve_metadata=True, overwrite=False, progress_callback=None):
+                        preserve_metadata=True, overwrite=False, progress_callback=None,
+                        clean_metadata=True):
     """
     Convert a video file to MP3 using FFmpeg
     
@@ -80,6 +98,7 @@ def convert_video_to_mp3(video_path, output_path=None, quality='192k',
         preserve_metadata: Whether to preserve metadata from video
         overwrite: Whether to overwrite existing output files
         progress_callback: Callback function for progress updates
+        clean_metadata: Whether to filter out video-specific metadata
         
     Returns:
         Path to the output MP3 file if successful, None if failed
@@ -118,9 +137,35 @@ def convert_video_to_mp3(video_path, output_path=None, quality='192k',
             '-ac', '2'  # Stereo
         ])
         
-        # Preserve metadata if requested
-        if preserve_metadata:
+        # Handle metadata preservation
+        if preserve_metadata and clean_metadata:
+            # METHOD 1: Remove all metadata first, then add only audio-relevant metadata
+            cmd.extend(['-map_metadata', '-1'])  # Remove all metadata
+            
+            # Extract only audio-relevant metadata from the source
+            audio_metadata = extract_audio_relevant_metadata(video_path)
+            for key, value in audio_metadata.items():
+                if value and value.strip():  # Only add non-empty values
+                    # Escape special characters in metadata values
+                    escaped_value = value.replace('"', '\\"')
+                    cmd.extend(['-metadata', f'{key}={escaped_value}'])
+            
+            # Prevent FFmpeg from adding its own encoder metadata
+            cmd.extend([
+                '-fflags', '+bitexact',
+                '-flags:a', '+bitexact'
+            ])
+                    
+        elif preserve_metadata and not clean_metadata:
+            # Copy all metadata (original behavior) - will include unwanted video metadata
             cmd.extend(['-map_metadata', '0'])
+        else:
+            # No metadata preservation at all
+            cmd.extend([
+                '-map_metadata', '-1',  # Remove all metadata
+                '-fflags', '+bitexact',  # Prevent encoder metadata
+                '-flags:a', '+bitexact'
+            ])
         
         cmd.append(output_path)
         
@@ -146,9 +191,62 @@ def convert_video_to_mp3(video_path, output_path=None, quality='192k',
             progress_callback(video_path, "Failed", error_msg)
         raise RuntimeError(error_msg)
 
+def extract_audio_relevant_metadata(video_path):
+    """Extract only audio-relevant metadata from video file"""
+    info = get_video_info(video_path)
+    if not info:
+        return {}
+    
+    metadata = {}
+    
+    # Try to get metadata from format section
+    if 'format' in info and 'tags' in info['format']:
+        tags = info['format']['tags']
+        
+        # Only map audio-relevant metadata tags
+        # Exclude container/video-specific metadata
+        audio_relevant_mapping = {
+            'title': 'title',
+            'artist': 'artist', 
+            'album': 'album',
+            'album_artist': 'album_artist',
+            'albumartist': 'album_artist',  # Alternative spelling
+            'genre': 'genre',
+            'track': 'track',
+            'date': 'date',
+            'year': 'date',
+            'comment': 'comment',
+            'composer': 'composer',
+            'performer': 'artist'  # Map performer to artist
+        }
+        
+        # Explicitly exclude these container/video-specific tags
+        exclude_tags = {
+            'major_brand', 'minor_version', 'compatible_brands',
+            'encoder', 'encoder_settings', 'creation_time',
+            'location', 'location-eng', 'com.android.version',
+            'handler_name', 'vendor_id', 'timecode', 'rotate',
+            'duration', 'bitrate', 'fps'
+        }
+        
+        for tag_key, tag_value in tags.items():
+            tag_key_lower = tag_key.lower()
+            
+            # Skip excluded tags
+            if tag_key_lower in exclude_tags:
+                continue
+                
+            # Check if this tag maps to an audio-relevant field
+            if tag_key_lower in audio_relevant_mapping:
+                audio_field = audio_relevant_mapping[tag_key_lower]
+                if tag_value and str(tag_value).strip():
+                    metadata[audio_field] = str(tag_value).strip()
+    
+    return metadata
+
 def batch_convert_videos(input_folder, output_folder=None, quality='192k', 
                         recursive=True, preserve_metadata=True, overwrite=False,
-                        progress_callback=None):
+                        progress_callback=None, clean_metadata=True):
     """
     Convert all video files in a folder to MP3
     
@@ -160,6 +258,7 @@ def batch_convert_videos(input_folder, output_folder=None, quality='192k',
         preserve_metadata: Whether to preserve metadata from videos
         overwrite: Whether to overwrite existing MP3 files
         progress_callback: Callback function for progress updates
+        clean_metadata: Whether to filter out video-specific metadata
         
     Returns:
         Dictionary with conversion statistics
@@ -213,7 +312,7 @@ def batch_convert_videos(input_folder, output_folder=None, quality='192k',
             # Convert video
             result_path = convert_video_to_mp3(
                 video_path, output_path, quality, 
-                preserve_metadata, overwrite, progress_callback
+                preserve_metadata, overwrite, progress_callback, clean_metadata
             )
             
             if result_path:
@@ -238,6 +337,8 @@ def main():
                        help='Search subdirectories recursively')
     parser.add_argument('--no-metadata', action='store_true',
                        help='Do not preserve metadata from video files')
+    parser.add_argument('--keep-video-metadata', action='store_true',
+                       help='Keep video-specific metadata (not recommended)')
     parser.add_argument('--overwrite', action='store_true',
                        help='Overwrite existing output files')
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -268,7 +369,8 @@ def main():
             output_path = args.output
             result = convert_video_to_mp3(
                 input_path, output_path, args.quality,
-                not args.no_metadata, args.overwrite, progress_callback
+                not args.no_metadata, args.overwrite, progress_callback,
+                not args.keep_video_metadata  # clean_metadata
             )
             
             if result:
@@ -281,7 +383,7 @@ def main():
             stats = batch_convert_videos(
                 input_path, args.output, args.quality,
                 args.recursive, not args.no_metadata, args.overwrite,
-                progress_callback
+                progress_callback, not args.keep_video_metadata  # clean_metadata
             )
             
             print(f"\nConversion complete:")

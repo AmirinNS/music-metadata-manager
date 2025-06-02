@@ -290,7 +290,7 @@ sudo yum install ffmpeg
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/music-metadata-manager.git
+   git clone https://github.com/amirinns/music-metadata-manager.git
    cd music-metadata-manager
    ```
 
