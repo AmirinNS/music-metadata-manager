@@ -6,7 +6,7 @@ A comprehensive GUI application for converting videos to MP3, extracting metadat
 
 ```
 music-metadata-manager/
-├── gui_with_converter.py          # Main GUI application with video conversion
+├── gui.py                         # Main GUI application with video conversion
 ├── convert_video_to_mp3.py        # Video conversion script
 ├── extract_music_metadata.py      # Metadata extraction script
 ├── update_music_metadata.py       # Metadata update script
@@ -98,7 +98,7 @@ sudo yum install ffmpeg
 
 3. **Run the application:**
    ```bash
-   python gui_with_converter.py
+   python gui.py
    ```
 
 ## User Guide
